@@ -27,6 +27,7 @@ from .constants import (
 from .player import SqueezelitePlayer
 
 if TYPE_CHECKING:
+    from aioslimproto.cli import SlimCLICommand
     from aioslimproto.client import SlimClient
 
 
@@ -88,6 +89,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             ip_address=self.mass.streams.publish_ip,
             name="Music Assistant",
             control_port=control_port,
+            cli_command_handler=self._handle_cli_command,
         )
 
     async def loaded_in_mass(self) -> None:
@@ -163,6 +165,31 @@ class SqueezelitePlayerProvider(PlayerProvider):
                 self.logger.warning("Error stopping SlimProto server during cleanup: %s", err)
             finally:
                 self.slimproto = None
+
+    async def _handle_cli_command(self, command: SlimCLICommand) -> None:
+        """
+        Handle play/pause CLI commands for our players, e.g. sent by the buttons of a player.
+
+        Any other command is left to aioslimproto by raising NotImplementedError.
+
+        :param command: The CLI command to handle.
+        """
+        if (
+            command.command not in ("play", "pause")
+            or not command.player_id
+            or not self.slimproto
+            or not self.slimproto.get_player(command.player_id)
+        ):
+            raise NotImplementedError
+        # aioslimproto would only (un)pause the stream, while the player controller
+        # also resumes the queue of a player that is idle (e.g. stopped or powered off)
+        arg = str(command.args[0]) if command.args else None
+        if command.command == "play" or arg == "0":
+            await self.mass.players.cmd_play(command.player_id)
+        elif arg == "1":
+            await self.mass.players.cmd_pause(command.player_id)
+        else:
+            await self.mass.players.cmd_play_pause(command.player_id)
 
     def _handle_slimproto_event(
         self,

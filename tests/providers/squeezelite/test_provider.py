@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aioslimproto.cli import SlimCLICommand
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
@@ -56,3 +57,47 @@ async def test_multi_client_stream_content_type_describes_output_format(
         await SqueezelitePlayerProvider._serve_multi_client_stream(provider, request)
 
     assert stream_response.call_args.kwargs["headers"]["Content-Type"] == expected_content_type
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "expected_cmd"),
+    [
+        ("play", [], "cmd_play"),
+        ("pause", ["0"], "cmd_play"),
+        ("pause", ["1"], "cmd_pause"),
+        ("pause", [], "cmd_play_pause"),
+    ],
+)
+async def test_cli_play_pause_is_routed_through_player_controller(
+    command: str, args: list[str], expected_cmd: str
+) -> None:
+    """Play/pause sent by a player must go through the controller, so an idle queue resumes."""
+    provider = MagicMock()
+    provider.mass.players = MagicMock(
+        cmd_play=AsyncMock(), cmd_pause=AsyncMock(), cmd_play_pause=AsyncMock()
+    )
+    cli_command = SlimCLICommand(player_id="aa:bb", command=command, args=args, kwargs={})
+
+    await SqueezelitePlayerProvider._handle_cli_command(provider, cli_command)
+
+    getattr(provider.mass.players, expected_cmd).assert_awaited_once_with("aa:bb")
+    for other in {"cmd_play", "cmd_pause", "cmd_play_pause"} - {expected_cmd}:
+        getattr(provider.mass.players, other).assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("command", "player_known"),
+    [("play", False), ("stop", True), ("button", True)],
+)
+async def test_cli_other_commands_are_left_to_aioslimproto(
+    command: str, player_known: bool
+) -> None:
+    """Commands we do not handle, or for unknown players, fall back to aioslimproto."""
+    provider = MagicMock()
+    provider.slimproto.get_player.return_value = MagicMock() if player_known else None
+    provider.mass.players = MagicMock(cmd_play=AsyncMock())
+    cli_command = SlimCLICommand(player_id="aa:bb", command=command, args=[], kwargs={})
+
+    with pytest.raises(NotImplementedError):
+        await SqueezelitePlayerProvider._handle_cli_command(provider, cli_command)
+    provider.mass.players.cmd_play.assert_not_awaited()
